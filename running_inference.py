@@ -11,15 +11,20 @@ def get_args():
     parser.add_argument('--saving-path', default='', type=str, help='the path of folder in which the inference result file locates')
     parser.add_argument('--use-local', action='store_true', help='load model locally from HuggingFace instead of using API')
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
+    parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
     return parser.parse_args()
 
 
-def load_hf_model(model_name, hf_token=None):
+def load_hf_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
 
     print(f"Loading model '{model_name}' from HuggingFace...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+    except OSError:
+        print(f"Tokenizer not found in '{model_name}', falling back to base model '{base_model_name}'...")
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.float16,
@@ -70,7 +75,7 @@ to_save["prompt_tokens"] = []
 to_save["completion_tokens"] = []
 
 if args.use_local:
-    hf_model, hf_tokenizer = load_hf_model(args.model_name, args.hf_token)
+    hf_model, hf_tokenizer = load_hf_model(args.model_name, args.hf_token, args.base_model)
 
 for i in tqdm(range(len(benchmark_info['schema']))):
     current_text = benchmark_info['text'][i]
