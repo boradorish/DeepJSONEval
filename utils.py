@@ -107,14 +107,49 @@ def compare_values(answer, model_output):
 
 
 
+def extract_json_from_output(model_output: str):
+    # 1. ```json ... ```
+    if "```json" in model_output:
+        candidate = model_output.split("```json")[-1].split("```")[0].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # 2. ``` ... ```
+    if "```" in model_output:
+        candidate = model_output.split("```")[1].strip()
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
+    # 3. 텍스트에서 { ... } 또는 [ ... ] 추출
+    import re
+    for pattern in [r'\{[\s\S]*\}', r'\[[\s\S]*\]']:
+        match = re.search(pattern, model_output)
+        if match:
+            try:
+                return json.loads(match.group())
+            except Exception:
+                pass
+
+    # 4. 출력 자체가 JSON
+    try:
+        return json.loads(model_output.strip())
+    except Exception:
+        pass
+
+    return None
+
+
 def json_evaluation_new(model_output: str, answer: str, schema: dict):
+    model_output_json = extract_json_from_output(model_output)
+    if model_output_json is None:
+        return 0, 0, 0, "No valid JSON found in model output"
+
     try:
-        raw_json_answer = model_output.split("```json")[-1].split("```")[0]
-    except:
-        return 0, 0, 0, "No markdown style JSON Pattern found"
-    
-    try:
-        model_output_json = json.loads(raw_json_answer)
+        model_output_json = json.loads(model_output_json) if isinstance(model_output_json, str) else model_output_json
     except:
         return 0, 0, 0, "Not a invalid JSON"
     
