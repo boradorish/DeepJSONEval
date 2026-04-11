@@ -10,19 +10,21 @@ def get_args():
     parser.add_argument('--model-name', default='', type=str, help='name of model when post request to the LLM chat api')
     parser.add_argument('--saving-path', default='', type=str, help='the path of folder in which the inference result file locates')
     parser.add_argument('--use-local', action='store_true', help='load model locally from HuggingFace instead of using API')
+    parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
     return parser.parse_args()
 
 
-def load_hf_model(model_name):
+def load_hf_model(model_name, hf_token=None):
     from transformers import AutoModelForCausalLM, AutoTokenizer
     import torch
 
     print(f"Loading model '{model_name}' from HuggingFace...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.float16,
         device_map='auto',
+        token=hf_token,
     )
     model.eval()
     print("Model loaded.")
@@ -68,7 +70,7 @@ to_save["prompt_tokens"] = []
 to_save["completion_tokens"] = []
 
 if args.use_local:
-    hf_model, hf_tokenizer = load_hf_model(args.model_name)
+    hf_model, hf_tokenizer = load_hf_model(args.model_name, args.hf_token)
 
 for i in tqdm(range(len(benchmark_info['schema']))):
     current_text = benchmark_info['text'][i]
