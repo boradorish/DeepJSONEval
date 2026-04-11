@@ -7,3 +7,4 @@ jsonschema
 transformers
 torch
 accelerate
+datasets
