@@ -108,6 +108,12 @@ def compare_values(answer, model_output):
 
 
 def extract_json_from_output(model_output: str):
+    import re
+
+    # Qwen3 thinking mode: </think> 이후만 파싱
+    if "</think>" in model_output:
+        model_output = model_output.split("</think>")[-1].strip()
+
     # 1. ```json ... ```
     if "```json" in model_output:
         candidate = model_output.split("```json")[-1].split("```")[0].strip()
@@ -125,7 +131,6 @@ def extract_json_from_output(model_output: str):
             pass
 
     # 3. 텍스트에서 { ... } 또는 [ ... ] 추출
-    import re
     for pattern in [r'\{[\s\S]*\}', r'\[[\s\S]*\]']:
         match = re.search(pattern, model_output)
         if match:
