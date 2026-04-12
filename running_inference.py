@@ -13,6 +13,7 @@ def get_args():
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
     parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
     parser.add_argument('--batch-size', default=8, type=int, help='batch size for local model inference')
+    parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
     return parser.parse_args()
 
 
@@ -42,11 +43,11 @@ def load_hf_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'):
     return model, tokenizer
 
 
-def run_local_inference_batch(model, tokenizer, messages_batch):
+def run_local_inference_batch(model, tokenizer, messages_batch, thinking_budget=1024):
     import torch
 
     texts = [
-        tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+        tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True, thinking_budget=thinking_budget)
         for msg in messages_batch
     ]
 
@@ -100,7 +101,7 @@ if args.use_local:
     for i in tqdm(range(0, len(all_messages), args.batch_size)):
         batch = all_messages[i:i + args.batch_size]
         try:
-            results = run_local_inference_batch(hf_model, hf_tokenizer, batch)
+            results = run_local_inference_batch(hf_model, hf_tokenizer, batch, args.thinking_budget)
         except:
             results = [("Need Retry", 0, 0)] * len(batch)
         for result in results:
