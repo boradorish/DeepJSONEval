@@ -3,71 +3,71 @@ from tqdm import tqdm
 import os
 import argparse
 
+# temperature 0.6
+# python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 0.6
+
+# temperature 1.0
+# python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 1.0
+
+
 def get_args():
     parser = argparse.ArgumentParser('DeepJSON inference script')
     parser.add_argument('--base-url', default='', type=str, help="base url of LLM chat api")
     parser.add_argument('--key', default='', type=str, help='api key for using the LLM chat api')
     parser.add_argument('--model-name', default='', type=str, help='name of model when post request to the LLM chat api')
     parser.add_argument('--saving-path', default='', type=str, help='the path of folder in which the inference result file locates')
-    parser.add_argument('--use-local', action='store_true', help='load model locally from HuggingFace instead of using API')
+    parser.add_argument('--use-local', action='store_true', help='load model locally using vLLM instead of using API')
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
     parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
     parser.add_argument('--batch-size', default=8, type=int, help='batch size for local model inference')
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
+    parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
     return parser.parse_args()
 
 
-def load_hf_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'):
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    import torch
+def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'):
+    from vllm import LLM
 
-    print(f"Loading model '{model_name}' from HuggingFace...")
+    if hf_token:
+        os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
+
+    print(f"Loading model '{model_name}' with vLLM...")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
-    except OSError:
+        llm = LLM(model=model_name, dtype='float16', trust_remote_code=True)
+    except Exception:
         print(f"Tokenizer not found in '{model_name}', falling back to base model '{base_model_name}'...")
-        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = 'left'
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map='auto',
-        token=hf_token,
-    )
-    model.eval()
+        llm = LLM(model=model_name, tokenizer=base_model_name, dtype='float16', trust_remote_code=True)
     print("Model loaded.")
-    return model, tokenizer
+    return llm
 
 
-def run_local_inference_batch(model, tokenizer, messages_batch, thinking_budget=1024):
-    import torch
+def run_vllm_inference_batch(llm, messages_batch, temperature=0.6, thinking_budget=1024):
+    from vllm import SamplingParams
+
+    tokenizer = llm.get_tokenizer()
 
     texts = [
         tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True, thinking_budget=thinking_budget)
         for msg in messages_batch
     ]
 
-    inputs = tokenizer(texts, return_tensors='pt', padding=True, truncation=True).to(model.device)
-    input_len = inputs['input_ids'].shape[1]
-    prompt_lengths = inputs['attention_mask'].sum(dim=1)
-
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=4096,
-            do_sample=False,
-        )
+    sampling_params = SamplingParams(temperature=temperature, max_tokens=4096)
+    outputs = llm.generate(texts, sampling_params)
+    # huggingface inference 쓰지 말고 vllm 에서 llm.generate() 함수 활용해서 구현해
+    # temperature 0.6 이랑 1.0 둘다 써보고 성능 어떻게 나오는지 보기
+    # error analysis : 1) schema 안 맞춤, 2) type 안 맞춤
+        # > 데이터셋 문제인가요?
+        # 1) 모델 크기 크기가 너무 작나? > 8B 평가중임
+        # - 데이터셋 제작은 잠깐 보류
+        # 2) 8B 결과 알려주세요
+        # 3) SFT 보다 Preference Optimization 이 나을 수도
+        # X (Y_w > Y_l)
 
     results = []
-    for i in range(len(messages_batch)):
-        generated = output_ids[i][input_len:]
-        response = tokenizer.decode(generated, skip_special_tokens=True)
-        prompt_tokens = int(prompt_lengths[i])
-        completion_tokens = int(generated.shape[0])
+    for output in outputs:
+        response = output.outputs[0].text
+        prompt_tokens = len(output.prompt_token_ids)
+        completion_tokens = len(output.outputs[0].token_ids)
         results.append((response, prompt_tokens, completion_tokens))
 
     return results
@@ -86,7 +86,7 @@ to_save["prompt_tokens"] = []
 to_save["completion_tokens"] = []
 
 if args.use_local:
-    hf_model, hf_tokenizer = load_hf_model(args.model_name, args.hf_token, args.base_model)
+    vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model)
 
 first_half = utils.load_file(r'JSON_Output_meta_prompt.txt')
 
@@ -101,7 +101,7 @@ if args.use_local:
     for i in tqdm(range(0, len(all_messages), args.batch_size)):
         batch = all_messages[i:i + args.batch_size]
         try:
-            results = run_local_inference_batch(hf_model, hf_tokenizer, batch, args.thinking_budget)
+            results = run_vllm_inference_batch(vllm_model, batch, args.temperature, args.thinking_budget)
         except:
             results = [("Need Retry", 0, 0)] * len(batch)
         for result in results:
@@ -118,5 +118,6 @@ else:
         to_save["prompt_tokens"].append(result[1])
         to_save["completion_tokens"].append(result[2])
 
-save_file_name = args.model_name.split('/')[-1].split(':')[0] + '.xlsx'
+temp_str = f"_t{args.temperature}" if args.use_local else ""
+save_file_name = args.model_name.split('/')[-1].split(':')[0] + temp_str + '.xlsx'
 utils.save_excel_data(os.path.join(args.saving_path, save_file_name), 'sheet1', to_save)

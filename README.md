@@ -81,16 +81,27 @@ The benchmark dataset has 5 columns: `schema`, `text`, `json`, `category` and `t
 * `category`: domain of the data peice
 * `true_depth`: the number of levels of nesting depth
 ### Running Inference
-We use API in OpenRouter website to run the infernece: 
-```python
-python running_inference.py --base-url 'url' --key 'api-key' --model-name 'model_name' --saving-path 'whre to save the inference result'
+**API (e.g. OpenRouter)**
+```bash
+python running_inference.py --base-url 'url' --key 'api-key' --model-name 'model_name' --saving-path 'where to save the inference result'
 ```
 * `--base-url`: base url of LLM chat api
 * `--key`: api key for using the LLM chat api
 * `--model-name`: name of model when post request to the LLM chat api
 * `--saving-path`: the path of folder in which the inference result file locates
 
-If do not use the API in OpenRouter website, users can create your own method of geetting inference result and change **line 35** in `running_infenrence.py`
+**Local inference via vLLM**
+```bash
+python running_inference.py --use-local --model-name 'model_name' --saving-path 'where to save the inference result' --temperature 0.6
+```
+* `--use-local`: load and run the model locally using vLLM
+* `--hf-token`: HuggingFace access token for private models (optional)
+* `--base-model`: base model name used as tokenizer fallback (default: `Qwen/Qwen3-0.6B`)
+* `--batch-size`: number of prompts per vLLM call (default: `8`)
+* `--thinking-budget`: max tokens allocated for Qwen3 thinking; set `0` to disable (default: `1024`)
+* `--temperature`: sampling temperature — try `0.6` or `1.0` (default: `0.6`)
+
+The output file is named `{model_name}_t{temperature}.xlsx` so results from different temperatures are saved separately.
 ### Continue Running Inference 
 The online LLM API could be unstale as running out of credits or request congestion, some result in the inference result will be marked as **"Need Retry"**. Use `running_infenrence_continue.py` to post requests on those data pieces need retry.
 ```python

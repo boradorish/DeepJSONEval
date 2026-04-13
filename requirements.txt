@@ -4,7 +4,5 @@ openai
 tqdm
 argparse
 jsonschema
-transformers
-torch
-accelerate
+vllm
 datasets
