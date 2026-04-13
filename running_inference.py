@@ -22,6 +22,7 @@ def get_args():
     parser.add_argument('--batch-size', default=8, type=int, help='batch size for local model inference')
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
+    parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
     return parser.parse_args()
 
 
@@ -97,27 +98,39 @@ for i in range(len(benchmark_info['schema'])):
     second_half = f"*** JSON Schema\n{curent_schema}\n\n*** Text Description\n{current_text}"
     all_messages.append([{"role": "user", "content": first_half + '\n' + second_half}])
 
-if args.use_local:
-    for i in tqdm(range(0, len(all_messages), args.batch_size)):
-        batch = all_messages[i:i + args.batch_size]
-        try:
-            results = run_vllm_inference_batch(vllm_model, batch, args.temperature, args.thinking_budget)
-        except:
-            results = [("Need Retry", 0, 0)] * len(batch)
-        for result in results:
+num_runs = args.num_runs if args.use_local else 1
+
+for run_idx in range(num_runs):
+    run_label = f" (run {run_idx + 1}/{num_runs})" if num_runs > 1 else ""
+    print(f"\nStarting inference{run_label}...")
+
+    to_save["model_output"] = []
+    to_save["prompt_tokens"] = []
+    to_save["completion_tokens"] = []
+
+    if args.use_local:
+        for i in tqdm(range(0, len(all_messages), args.batch_size)):
+            batch = all_messages[i:i + args.batch_size]
+            try:
+                results = run_vllm_inference_batch(vllm_model, batch, args.temperature, args.thinking_budget)
+            except:
+                results = [("Need Retry", 0, 0)] * len(batch)
+            for result in results:
+                to_save["model_output"].append(result[0])
+                to_save["prompt_tokens"].append(result[1])
+                to_save["completion_tokens"].append(result[2])
+    else:
+        for i in tqdm(range(len(all_messages))):
+            try:
+                result = utils.post_request_by_openai_format(args.base_url, args.key, args.model_name, all_messages[i])
+            except:
+                result = ["Need Retry"] * 3
             to_save["model_output"].append(result[0])
             to_save["prompt_tokens"].append(result[1])
             to_save["completion_tokens"].append(result[2])
-else:
-    for i in tqdm(range(len(all_messages))):
-        try:
-            result = utils.post_request_by_openai_format(args.base_url, args.key, args.model_name, all_messages[i])
-        except:
-            result = ["Need Retry"] * 3
-        to_save["model_output"].append(result[0])
-        to_save["prompt_tokens"].append(result[1])
-        to_save["completion_tokens"].append(result[2])
 
-temp_str = f"_t{args.temperature}" if args.use_local else ""
-save_file_name = args.model_name.split('/')[-1].split(':')[0] + temp_str + '.xlsx'
-utils.save_excel_data(os.path.join(args.saving_path, save_file_name), 'sheet1', to_save)
+    temp_str = f"_t{args.temperature}" if args.use_local else ""
+    run_str = f"_run{run_idx + 1}" if num_runs > 1 else ""
+    save_file_name = args.model_name.split('/')[-1].split(':')[0] + temp_str + run_str + '.xlsx'
+    utils.save_excel_data(os.path.join(args.saving_path, save_file_name), 'sheet1', to_save)
+    print(f"Saved: {save_file_name}")
