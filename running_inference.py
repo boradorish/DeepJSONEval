@@ -19,7 +19,6 @@ def get_args():
     parser.add_argument('--use-local', action='store_true', help='load model locally using vLLM instead of using API')
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
     parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
-    parser.add_argument('--batch-size', default=8, type=int, help='batch size for local model inference')
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
     parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
@@ -109,16 +108,14 @@ for run_idx in range(num_runs):
     to_save["completion_tokens"] = []
 
     if args.use_local:
-        for i in tqdm(range(0, len(all_messages), args.batch_size)):
-            batch = all_messages[i:i + args.batch_size]
-            try:
-                results = run_vllm_inference_batch(vllm_model, batch, args.temperature, args.thinking_budget)
-            except:
-                results = [("Need Retry", 0, 0)] * len(batch)
-            for result in results:
-                to_save["model_output"].append(result[0])
-                to_save["prompt_tokens"].append(result[1])
-                to_save["completion_tokens"].append(result[2])
+        try:
+            results = run_vllm_inference_batch(vllm_model, all_messages, args.temperature, args.thinking_budget)
+        except:
+            results = [("Need Retry", 0, 0)] * len(all_messages)
+        for result in results:
+            to_save["model_output"].append(result[0])
+            to_save["prompt_tokens"].append(result[1])
+            to_save["completion_tokens"].append(result[2])
     else:
         for i in tqdm(range(len(all_messages))):
             try:
