@@ -2,7 +2,7 @@ import utils
 import argparse
 import os
 import json
-
+# python running_evaluation.py --load-path results/ --saving-path eval_results/
 def get_args():
     parser = argparse.ArgumentParser('DeepJSON evaluation script') 
     parser.add_argument('--load-path', default='', type=str, help='the path of folder in which the inference result file locates')
