@@ -4,7 +4,7 @@ import os
 import argparse
 
 # temperature 0.6
-# python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 0.6
+# python running_inference.py --use-local --model-name boradorish/qwen3-4b-jsonschemabench --temperature 0.6
 
 # temperature 1.0
 # python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 1.0

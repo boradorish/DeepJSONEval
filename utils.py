@@ -110,6 +110,9 @@ def compare_values(answer, model_output):
 def extract_json_from_output(model_output: str):
     import re
 
+    if not isinstance(model_output, str):
+        return None
+
     # Qwen3 thinking mode: </think> 이후만 파싱
     if "</think>" in model_output:
         model_output = model_output.split("</think>")[-1].strip()
