@@ -27,14 +27,22 @@ def get_args():
 
 
 def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None):
+    import os
+
+    # Must be set before importing vllm
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
+    os.environ.setdefault("VLLM_USE_V1", "0")
+
     from vllm import LLM
 
     if hf_token:
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
-    # use FlashInfer sampler to avoid Triton JIT compilation (requires C compiler)
-    os.environ.setdefault('VLLM_USE_FLASHINFER_SAMPLER', '1')
 
-    kwargs = dict(dtype='float16', trust_remote_code=True, enforce_eager=True)
+    kwargs = dict(
+        dtype='float16',
+        trust_remote_code=True,
+        enforce_eager=True,
+    )
     if max_model_len is not None:
         kwargs['max_model_len'] = max_model_len
 
@@ -44,6 +52,7 @@ def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'
     except Exception:
         print(f"Tokenizer not found in '{model_name}', falling back to base model '{base_model_name}'...")
         llm = LLM(model=model_name, tokenizer=base_model_name, **kwargs)
+
     print("Model loaded.")
     return llm
 
