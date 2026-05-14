@@ -24,6 +24,7 @@ def get_args():
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
     parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
     parser.add_argument('--max-model-len', default=None, type=int, help='maximum model context length (reduce if GPU OOM, e.g. 8192)')
+    parser.add_argument('--cc', default=None, type=str, help='C compiler path for Triton/vLLM; only sets CC for this process')
     return parser.parse_args()
 
 
@@ -35,11 +36,26 @@ def configure_vllm_environment(hf_token=None):
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
 
 
-def ensure_c_compiler_available():
+def ensure_c_compiler_available(cc_path=None):
+    if cc_path:
+        resolved_cc_path = shutil.which(cc_path) or cc_path
+        if os.path.exists(resolved_cc_path):
+            os.environ["CC"] = resolved_cc_path
+            return
+        raise RuntimeError(f"Requested C compiler was not found: {cc_path}")
+
     if os.environ.get("CC"):
         return
 
-    for compiler in ("cc", "gcc", "clang"):
+    compiler_candidates = (
+        "cc",
+        "gcc",
+        "clang",
+        "x86_64-conda-linux-gnu-gcc",
+        "aarch64-conda-linux-gnu-gcc",
+    )
+
+    for compiler in compiler_candidates:
         compiler_path = shutil.which(compiler)
         if compiler_path:
             os.environ["CC"] = compiler_path
@@ -47,9 +63,10 @@ def ensure_c_compiler_available():
 
     raise RuntimeError(
         "vLLM/Triton requires a C compiler, but none was found. "
-        "Install gcc/clang on the server or set the CC environment variable "
-        "before running this script. For Ubuntu/Debian, try: "
-        "apt-get update && apt-get install -y build-essential"
+        "On a shared server, install a compiler in your own conda environment "
+        "instead of changing the system packages, then pass it via --cc or CC. "
+        "Example: conda install -c conda-forge gcc_linux-64 gxx_linux-64 -y "
+        "&& python running_inference.py --use-local --cc x86_64-conda-linux-gnu-gcc ..."
     )
 
 
@@ -73,9 +90,9 @@ def is_tokenizer_error(error):
     )
 
 
-def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None):
+def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None, cc_path=None):
     configure_vllm_environment(hf_token)
-    ensure_c_compiler_available()
+    ensure_c_compiler_available(cc_path)
 
     from vllm import LLM
 
@@ -163,7 +180,13 @@ def main():
 
     vllm_model = None
     if args.use_local:
-        vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model, args.max_model_len)
+        vllm_model = load_vllm_model(
+            args.model_name,
+            args.hf_token,
+            args.base_model,
+            args.max_model_len,
+            args.cc,
+        )
 
     all_messages = build_messages(benchmark_info)
     num_runs = args.num_runs if args.use_local else 1
