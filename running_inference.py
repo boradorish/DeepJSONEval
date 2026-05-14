@@ -30,8 +30,8 @@ def get_args():
 
 def configure_vllm_environment(hf_token=None):
     # Must be set before importing vllm.
-    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
-    os.environ.setdefault("VLLM_USE_V1", "0")
+    os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+    os.environ.setdefault("VLLM_DEEP_GEMM_WARMUP", "skip")
     if hf_token:
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
 
@@ -90,7 +90,13 @@ def is_tokenizer_error(error):
     )
 
 
-def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None, cc_path=None):
+def load_vllm_model(
+    model_name,
+    hf_token=None,
+    base_model_name='Qwen/Qwen3-0.6B',
+    max_model_len=None,
+    cc_path=None,
+):
     configure_vllm_environment(hf_token)
     ensure_c_compiler_available(cc_path)
 
