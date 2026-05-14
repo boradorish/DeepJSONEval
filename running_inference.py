@@ -4,7 +4,7 @@ import os
 import argparse
 
 # temperature 0.6
-# python running_inference.py --use-local --model-name boradorish/qwen3-4b-jsonschemabench --temperature 0.6
+# python running_inference.py --use-local --model-name boradorish/qwen3-0.6b-fc --temperature 0.6
 
 # temperature 1.0
 # python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 1.0
@@ -22,21 +22,26 @@ def get_args():
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
     parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
+    parser.add_argument('--max-model-len', default=None, type=int, help='maximum model context length (reduce if GPU OOM, e.g. 8192)')
     return parser.parse_args()
 
 
-def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B'):
+def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None):
     from vllm import LLM
 
     if hf_token:
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
 
+    kwargs = dict(dtype='float16', trust_remote_code=True, enforce_eager=True)
+    if max_model_len is not None:
+        kwargs['max_model_len'] = max_model_len
+
     print(f"Loading model '{model_name}' with vLLM...")
     try:
-        llm = LLM(model=model_name, dtype='float16', trust_remote_code=True)
+        llm = LLM(model=model_name, **kwargs)
     except Exception:
         print(f"Tokenizer not found in '{model_name}', falling back to base model '{base_model_name}'...")
-        llm = LLM(model=model_name, tokenizer=base_model_name, dtype='float16', trust_remote_code=True)
+        llm = LLM(model=model_name, tokenizer=base_model_name, **kwargs)
     print("Model loaded.")
     return llm
 
@@ -86,7 +91,7 @@ to_save["prompt_tokens"] = []
 to_save["completion_tokens"] = []
 
 if args.use_local:
-    vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model)
+    vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model, args.max_model_len)
 
 first_half = utils.load_file(r'JSON_Output_meta_prompt.txt')
 
