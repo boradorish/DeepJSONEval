@@ -2,6 +2,7 @@ import utils
 from tqdm import tqdm
 import os
 import argparse
+import shutil
 
 # temperature 0.6
 # python running_inference.py --use-local --model-name boradorish/qwen3-0.6b-fc --temperature 0.6
@@ -26,31 +27,68 @@ def get_args():
     return parser.parse_args()
 
 
-def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None):
-    import os
-
-    # Must be set before importing vllm
+def configure_vllm_environment(hf_token=None):
+    # Must be set before importing vllm.
     os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     os.environ.setdefault("VLLM_USE_V1", "0")
-
-    from vllm import LLM
-
     if hf_token:
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
 
-    kwargs = dict(
-        dtype='float16',
-        trust_remote_code=True,
-        enforce_eager=True,
+
+def ensure_c_compiler_available():
+    if os.environ.get("CC"):
+        return
+
+    for compiler in ("cc", "gcc", "clang"):
+        compiler_path = shutil.which(compiler)
+        if compiler_path:
+            os.environ["CC"] = compiler_path
+            return
+
+    raise RuntimeError(
+        "vLLM/Triton requires a C compiler, but none was found. "
+        "Install gcc/clang on the server or set the CC environment variable "
+        "before running this script. For Ubuntu/Debian, try: "
+        "apt-get update && apt-get install -y build-essential"
     )
+
+
+def build_vllm_kwargs(max_model_len=None):
+    kwargs = {
+        'dtype': 'float16',
+        'trust_remote_code': True,
+        'enforce_eager': True,
+    }
+
     if max_model_len is not None:
         kwargs['max_model_len'] = max_model_len
+    return kwargs
+
+
+def is_tokenizer_error(error):
+    message = str(error).lower()
+    return "tokenizer" in message and any(
+        keyword in message
+        for keyword in ("not found", "failed", "could not", "couldn't", "unable")
+    )
+
+
+def load_vllm_model(model_name, hf_token=None, base_model_name='Qwen/Qwen3-0.6B', max_model_len=None):
+    configure_vllm_environment(hf_token)
+    ensure_c_compiler_available()
+
+    from vllm import LLM
+
+    kwargs = build_vllm_kwargs(max_model_len)
 
     print(f"Loading model '{model_name}' with vLLM...")
     try:
-        llm = LLM(model=model_name, **kwargs)
-    except Exception:
-        print(f"Tokenizer not found in '{model_name}', falling back to base model '{base_model_name}'...")
+        llm = LLM(model=model_name, tokenizer=model_name, **kwargs)
+    except Exception as error:
+        if not is_tokenizer_error(error):
+            raise
+
+        print(f"Tokenizer failed for '{model_name}', falling back to base model '{base_model_name}'...")
         llm = LLM(model=model_name, tokenizer=base_model_name, **kwargs)
 
     print("Model loaded.")
@@ -89,61 +127,77 @@ def run_vllm_inference_batch(llm, messages_batch, temperature=0.6, thinking_budg
     return results
 
 
-args = get_args()
+def build_messages(benchmark_info):
+    first_half = utils.load_file(r'JSON_Output_meta_prompt.txt')
+    messages = []
 
-benchmark_file = 'DeepJSONEval.xlsx'
+    for i in range(len(benchmark_info['schema'])):
+        current_text = benchmark_info['text'][i]
+        current_schema = benchmark_info['schema'][i]
+        second_half = f"*** JSON Schema\n{current_schema}\n\n*** Text Description\n{current_text}"
+        messages.append([{"role": "user", "content": first_half + '\n' + second_half}])
 
-benchmark_info = utils.load_excel_data(benchmark_file, 'sheet1')
+    return messages
 
-to_save = benchmark_info.to_dict(orient='list')
 
-to_save["model_output"] = []
-to_save["prompt_tokens"] = []
-to_save["completion_tokens"] = []
-
-if args.use_local:
-    vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model, args.max_model_len)
-
-first_half = utils.load_file(r'JSON_Output_meta_prompt.txt')
-
-all_messages = []
-for i in range(len(benchmark_info['schema'])):
-    current_text = benchmark_info['text'][i]
-    curent_schema = benchmark_info['schema'][i]
-    second_half = f"*** JSON Schema\n{curent_schema}\n\n*** Text Description\n{current_text}"
-    all_messages.append([{"role": "user", "content": first_half + '\n' + second_half}])
-
-num_runs = args.num_runs if args.use_local else 1
-
-for run_idx in range(num_runs):
-    run_label = f" (run {run_idx + 1}/{num_runs})" if num_runs > 1 else ""
-    print(f"\nStarting inference{run_label}...")
-
+def reset_output_columns(to_save):
     to_save["model_output"] = []
     to_save["prompt_tokens"] = []
     to_save["completion_tokens"] = []
 
-    if args.use_local:
-        try:
-            results = run_vllm_inference_batch(vllm_model, all_messages, args.temperature, args.thinking_budget)
-        except:
-            results = [("Need Retry", 0, 0)] * len(all_messages)
-        for result in results:
-            to_save["model_output"].append(result[0])
-            to_save["prompt_tokens"].append(result[1])
-            to_save["completion_tokens"].append(result[2])
-    else:
-        for i in tqdm(range(len(all_messages))):
-            try:
-                result = utils.post_request_by_openai_format(args.base_url, args.key, args.model_name, all_messages[i])
-            except:
-                result = ["Need Retry"] * 3
-            to_save["model_output"].append(result[0])
-            to_save["prompt_tokens"].append(result[1])
-            to_save["completion_tokens"].append(result[2])
 
+def save_results(args, to_save, run_idx, num_runs):
     temp_str = f"_t{args.temperature}" if args.use_local else ""
     run_str = f"_run{run_idx + 1}" if num_runs > 1 else ""
     save_file_name = args.model_name.split('/')[-1].split(':')[0] + temp_str + run_str + '.xlsx'
     utils.save_excel_data(os.path.join(args.saving_path, save_file_name), 'sheet1', to_save)
     print(f"Saved: {save_file_name}")
+
+
+def main():
+    args = get_args()
+
+    benchmark_file = 'DeepJSONEval.xlsx'
+    benchmark_info = utils.load_excel_data(benchmark_file, 'sheet1')
+    to_save = benchmark_info.to_dict(orient='list')
+
+    vllm_model = None
+    if args.use_local:
+        vllm_model = load_vllm_model(args.model_name, args.hf_token, args.base_model, args.max_model_len)
+
+    all_messages = build_messages(benchmark_info)
+    num_runs = args.num_runs if args.use_local else 1
+
+    for run_idx in range(num_runs):
+        run_label = f" (run {run_idx + 1}/{num_runs})" if num_runs > 1 else ""
+        print(f"\nStarting inference{run_label}...")
+
+        reset_output_columns(to_save)
+
+        if args.use_local:
+            try:
+                results = run_vllm_inference_batch(vllm_model, all_messages, args.temperature, args.thinking_budget)
+            except Exception as error:
+                print(f"vLLM inference failed: {error}")
+                results = [("Need Retry", 0, 0)] * len(all_messages)
+
+            for result in results:
+                to_save["model_output"].append(result[0])
+                to_save["prompt_tokens"].append(result[1])
+                to_save["completion_tokens"].append(result[2])
+        else:
+            for i in tqdm(range(len(all_messages))):
+                try:
+                    result = utils.post_request_by_openai_format(args.base_url, args.key, args.model_name, all_messages[i])
+                except Exception as error:
+                    print(f"API inference failed at row {i}: {error}")
+                    result = ["Need Retry"] * 3
+                to_save["model_output"].append(result[0])
+                to_save["prompt_tokens"].append(result[1])
+                to_save["completion_tokens"].append(result[2])
+
+        save_results(args, to_save, run_idx, num_runs)
+
+
+if __name__ == "__main__":
+    main()
