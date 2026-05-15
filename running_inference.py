@@ -5,7 +5,7 @@ import argparse
 import shutil
 
 # temperature 0.6
-# python running_inference.py --use-local --model-name boradorish/qwen3-0.6b-fc --temperature 0.6
+# python running_inference.py --use-local --model-name boradorish/qwen3-4b-new --temperature 0.6
 
 # temperature 1.0
 # python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 1.0
@@ -18,6 +18,7 @@ def get_args():
     parser.add_argument('--model-name', default='', type=str, help='name of model when post request to the LLM chat api')
     parser.add_argument('--saving-path', default='', type=str, help='the path of folder in which the inference result file locates')
     parser.add_argument('--use-local', action='store_true', help='load model locally using vLLM instead of using API')
+    parser.add_argument('--backend', choices=('vllm', 'transformers'), default='vllm', help='local inference backend used with --use-local')
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
     parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
@@ -118,13 +119,64 @@ def load_vllm_model(
     return llm
 
 
+def load_transformers_model(
+    model_name,
+    hf_token=None,
+    base_model_name='Qwen/Qwen3-0.6B',
+):
+    if hf_token:
+        os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
+
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    load_kwargs = {
+        'trust_remote_code': True,
+        'torch_dtype': torch.float16,
+        'token': hf_token,
+    }
+
+    print(f"Loading model '{model_name}' with Transformers...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, token=hf_token)
+    except Exception as error:
+        if not is_tokenizer_error(error):
+            raise
+        print(f"Tokenizer failed for '{model_name}', falling back to base model '{base_model_name}'...")
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True, token=hf_token)
+
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_name, device_map='auto', **load_kwargs)
+    except ImportError:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs).to(device)
+
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model.eval()
+    print("Model loaded.")
+    return model, tokenizer
+
+
+def apply_chat_template(tokenizer, messages, thinking_budget=1024):
+    try:
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            thinking_budget=thinking_budget,
+        )
+    except TypeError:
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+
 def run_vllm_inference_batch(llm, messages_batch, temperature=0.6, thinking_budget=1024):
     from vllm import SamplingParams
 
     tokenizer = llm.get_tokenizer()
 
     texts = [
-        tokenizer.apply_chat_template(msg, tokenize=False, add_generation_prompt=True, thinking_budget=thinking_budget)
+        apply_chat_template(tokenizer, msg, thinking_budget)
         for msg in messages_batch
     ]
 
@@ -146,6 +198,36 @@ def run_vllm_inference_batch(llm, messages_batch, temperature=0.6, thinking_budg
         prompt_tokens = len(output.prompt_token_ids)
         completion_tokens = len(output.outputs[0].token_ids)
         results.append((response, prompt_tokens, completion_tokens))
+
+    return results
+
+
+def run_transformers_inference_batch(model_and_tokenizer, messages_batch, temperature=0.6, thinking_budget=1024):
+    import torch
+
+    model, tokenizer = model_and_tokenizer
+    results = []
+    model_device = next(model.parameters()).device
+
+    for messages in tqdm(messages_batch):
+        text = apply_chat_template(tokenizer, messages, thinking_budget)
+        inputs = tokenizer(text, return_tensors='pt')
+        prompt_tokens = int(inputs['input_ids'].shape[-1])
+        inputs = {key: value.to(model_device) for key, value in inputs.items()}
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=4096,
+                do_sample=temperature > 0,
+                temperature=temperature if temperature > 0 else None,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+        completion_ids = generated_ids[0][prompt_tokens:]
+        response = tokenizer.decode(completion_ids, skip_special_tokens=True)
+        results.append((response, prompt_tokens, int(completion_ids.shape[-1])))
 
     return results
 
@@ -184,15 +266,18 @@ def main():
     benchmark_info = utils.load_excel_data(benchmark_file, 'sheet1')
     to_save = benchmark_info.to_dict(orient='list')
 
-    vllm_model = None
+    local_model = None
     if args.use_local:
-        vllm_model = load_vllm_model(
-            args.model_name,
-            args.hf_token,
-            args.base_model,
-            args.max_model_len,
-            args.cc,
-        )
+        if args.backend == 'vllm':
+            local_model = load_vllm_model(
+                args.model_name,
+                args.hf_token,
+                args.base_model,
+                args.max_model_len,
+                args.cc,
+            )
+        else:
+            local_model = load_transformers_model(args.model_name, args.hf_token, args.base_model)
 
     all_messages = build_messages(benchmark_info)
     num_runs = args.num_runs if args.use_local else 1
@@ -205,9 +290,12 @@ def main():
 
         if args.use_local:
             try:
-                results = run_vllm_inference_batch(vllm_model, all_messages, args.temperature, args.thinking_budget)
+                if args.backend == 'vllm':
+                    results = run_vllm_inference_batch(local_model, all_messages, args.temperature, args.thinking_budget)
+                else:
+                    results = run_transformers_inference_batch(local_model, all_messages, args.temperature, args.thinking_budget)
             except Exception as error:
-                print(f"vLLM inference failed: {error}")
+                print(f"{args.backend} inference failed: {error}")
                 results = [("Need Retry", 0, 0)] * len(all_messages)
 
             for result in results:
