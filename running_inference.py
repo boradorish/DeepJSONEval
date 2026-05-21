@@ -21,11 +21,11 @@ def get_args():
     parser.add_argument('--use-local', action='store_true', help='load model locally using vLLM instead of using API')
     parser.add_argument('--backend', choices=('vllm', 'transformers'), default='vllm', help='local inference backend used with --use-local')
     parser.add_argument('--hf-token', default=None, type=str, help='HuggingFace access token for private models')
-    parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
-    parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
+    parser.add_argument('--base-model', default='Qwen/Qwen3-4B', type=str, help='base model name for tokenizer fallback')
+    parser.add_argument('--thinking-budget', default=0, type=int, help='max tokens for Qwen3 thinking (0 disables thinking)')
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
     parser.add_argument('--top-p', default=0.95, type=float, help='nucleus sampling top-p for local inference')
-    parser.add_argument('--max-new-tokens', default=4096, type=int, help='maximum new tokens generated per prompt')
+    parser.add_argument('--max-new-tokens', default=1024, type=int, help='maximum new tokens generated per prompt')
     parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
     parser.add_argument('--max-model-len', default=None, type=int, help='maximum model context length (reduce if GPU OOM, e.g. 8192)')
     parser.add_argument('--gpu-ids', default=None, type=str, help='comma-separated GPU ids to expose, e.g. 0 or 0,1; sets CUDA_VISIBLE_DEVICES before loading vLLM')
@@ -189,14 +189,16 @@ def load_transformers_model(
     return model, tokenizer
 
 
-def apply_chat_template(tokenizer, messages, thinking_budget=1024):
+def apply_chat_template(tokenizer, messages, thinking_budget=0):
     try:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            thinking_budget=thinking_budget,
-        )
+        kwargs = {
+            'tokenize': False,
+            'add_generation_prompt': True,
+            'enable_thinking': thinking_budget > 0,
+        }
+        if thinking_budget > 0:
+            kwargs['thinking_budget'] = thinking_budget
+        return tokenizer.apply_chat_template(messages, **kwargs)
     except TypeError:
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
@@ -206,8 +208,8 @@ def run_vllm_inference_batch(
     messages_batch,
     temperature=0.6,
     top_p=0.95,
-    max_new_tokens=4096,
-    thinking_budget=1024,
+    max_new_tokens=1024,
+    thinking_budget=0,
 ):
     from vllm import SamplingParams
 
@@ -237,7 +239,7 @@ def run_vllm_inference_batch(
     return results
 
 
-def run_transformers_inference_batch(model_and_tokenizer, messages_batch, temperature=0.6, thinking_budget=1024):
+def run_transformers_inference_batch(model_and_tokenizer, messages_batch, temperature=0.6, thinking_budget=0):
     import torch
 
     model, tokenizer = model_and_tokenizer
@@ -253,7 +255,7 @@ def run_transformers_inference_batch(model_and_tokenizer, messages_batch, temper
         with torch.inference_mode():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens=4096,
+                max_new_tokens=1024,
                 do_sample=temperature > 0,
                 temperature=temperature if temperature > 0 else None,
                 pad_token_id=tokenizer.pad_token_id,

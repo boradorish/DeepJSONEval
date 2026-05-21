@@ -1,5 +1,6 @@
 .venv/
 __pycache__/
 results/
+new_result/
 eval_results/
 stashed/
