@@ -106,6 +106,42 @@ def compare_values(answer, model_output):
         return 0
 
 
+def remove_title_fields(value):
+    if isinstance(value, dict):
+        return {
+            key: remove_title_fields(item)
+            for key, item in value.items()
+            if key != "title"
+        }
+
+    if isinstance(value, list):
+        return [remove_title_fields(item) for item in value]
+
+    return value
+
+
+def remove_title_from_schema(schema):
+    if isinstance(schema, dict):
+        cleaned_schema = {}
+        for key, value in schema.items():
+            if key == "properties" and isinstance(value, dict):
+                cleaned_schema[key] = {
+                    property_key: remove_title_from_schema(property_value)
+                    for property_key, property_value in value.items()
+                    if property_key != "title"
+                }
+            elif key == "required" and isinstance(value, list):
+                cleaned_schema[key] = [item for item in value if item != "title"]
+            else:
+                cleaned_schema[key] = remove_title_from_schema(value)
+        return cleaned_schema
+
+    if isinstance(schema, list):
+        return [remove_title_from_schema(item) for item in schema]
+
+    return schema
+
+
 
 def extract_json_from_output(model_output: str):
     import re
@@ -162,6 +198,10 @@ def json_evaluation_new(model_output: str, answer: str, schema: dict):
         return 0, 0, 0, "Not a invalid JSON"
     
     answer_json = json.loads(answer)
+    model_output_json = remove_title_fields(model_output_json)
+    answer_json = remove_title_fields(answer_json)
+    schema = remove_title_from_schema(schema)
+
     try:
         validate(instance=model_output_json, schema=schema)
     except:

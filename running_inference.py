@@ -5,7 +5,7 @@ import argparse
 import shutil
 
 # temperature 0.6
-# python running_inference.py --use-local --model-name boradorish/qwen3-4b-new --temperature 0.6
+# python running_inference.py --use-local --model-name ../LLaMA-Factory/saves/qwen3-0.6b/full/dpo --temperature 0.6
 
 # temperature 1.0
 # python running_inference.py --use-local --model-name Qwen/Qwen3-8B --temperature 1.0
@@ -16,6 +16,7 @@ def get_args():
     parser.add_argument('--base-url', default='', type=str, help="base url of LLM chat api")
     parser.add_argument('--key', default='', type=str, help='api key for using the LLM chat api')
     parser.add_argument('--model-name', default='', type=str, help='name of model when post request to the LLM chat api')
+    parser.add_argument('--tokenizer', default=None, type=str, help='tokenizer path/name for vLLM local inference')
     parser.add_argument('--saving-path', default='', type=str, help='the path of folder in which the inference result file locates')
     parser.add_argument('--use-local', action='store_true', help='load model locally using vLLM instead of using API')
     parser.add_argument('--backend', choices=('vllm', 'transformers'), default='vllm', help='local inference backend used with --use-local')
@@ -23,18 +24,28 @@ def get_args():
     parser.add_argument('--base-model', default='Qwen/Qwen3-0.6B', type=str, help='base model name for tokenizer fallback')
     parser.add_argument('--thinking-budget', default=1024, type=int, help='max tokens for Qwen3 thinking (0 to disable)')
     parser.add_argument('--temperature', default=0.6, type=float, help='sampling temperature for vLLM inference (try 0.6 or 1.0)')
+    parser.add_argument('--top-p', default=0.95, type=float, help='nucleus sampling top-p for local inference')
+    parser.add_argument('--max-new-tokens', default=4096, type=int, help='maximum new tokens generated per prompt')
     parser.add_argument('--num-runs', default=1, type=int, help='number of inference runs (model loaded once, results saved separately)')
     parser.add_argument('--max-model-len', default=None, type=int, help='maximum model context length (reduce if GPU OOM, e.g. 8192)')
+    parser.add_argument('--gpu-ids', default=None, type=str, help='comma-separated GPU ids to expose, e.g. 0 or 0,1; sets CUDA_VISIBLE_DEVICES before loading vLLM')
+    parser.add_argument('--tensor-parallel-size', default=1, type=int, help='number of GPUs used by vLLM tensor parallelism')
+    parser.add_argument('--gpu-memory-utilization', default=0.9, type=float, help='fraction of visible GPU memory vLLM may reserve')
+    parser.add_argument('--attention-backend', default=None, type=str, help='optional vLLM attention backend, e.g. FLASH_ATTN, XFORMERS, FLASHINFER')
     parser.add_argument('--cc', default=None, type=str, help='C compiler path for Triton/vLLM; only sets CC for this process')
     return parser.parse_args()
 
 
-def configure_vllm_environment(hf_token=None):
+def configure_vllm_environment(hf_token=None, attention_backend=None):
     # Must be set before importing vllm.
+    if attention_backend:
+        os.environ["VLLM_ATTENTION_BACKEND"] = attention_backend
     os.environ["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
     os.environ.setdefault("VLLM_DEEP_GEMM_WARMUP", "skip")
     if hf_token:
+        os.environ['HF_TOKEN'] = hf_token
         os.environ['HUGGING_FACE_HUB_TOKEN'] = hf_token
+        os.environ['HUGGINGFACE_HUB_TOKEN'] = hf_token
 
 
 def ensure_c_compiler_available(cc_path=None):
@@ -71,11 +82,11 @@ def ensure_c_compiler_available(cc_path=None):
     )
 
 
-def build_vllm_kwargs(max_model_len=None):
+def build_vllm_kwargs(max_model_len=None, tensor_parallel_size=1, gpu_memory_utilization=0.9):
     kwargs = {
-        'dtype': 'float16',
         'trust_remote_code': True,
-        'enforce_eager': True,
+        'tensor_parallel_size': tensor_parallel_size,
+        'gpu_memory_utilization': gpu_memory_utilization,
     }
 
     if max_model_len is not None:
@@ -93,30 +104,47 @@ def is_tokenizer_error(error):
 
 def load_vllm_model(
     model_name,
+    tokenizer_name=None,
     hf_token=None,
     base_model_name='Qwen/Qwen3-0.6B',
     max_model_len=None,
     cc_path=None,
+    tensor_parallel_size=1,
+    gpu_memory_utilization=0.9,
+    attention_backend=None,
 ):
-    configure_vllm_environment(hf_token)
+    configure_vllm_environment(hf_token, attention_backend)
     ensure_c_compiler_available(cc_path)
 
     from vllm import LLM
+    from transformers import AutoTokenizer
 
-    kwargs = build_vllm_kwargs(max_model_len)
+    tokenizer_name = tokenizer_name or model_name
+    tokenizer_kwargs = {'trust_remote_code': True}
+    if hf_token:
+        tokenizer_kwargs['token'] = hf_token
 
-    print(f"Loading model '{model_name}' with vLLM...")
+    print(f"Loading tokenizer '{tokenizer_name}'...")
     try:
-        llm = LLM(model=model_name, tokenizer=model_name, **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, **tokenizer_kwargs)
     except Exception as error:
         if not is_tokenizer_error(error):
             raise
+        print(f"Tokenizer failed for '{tokenizer_name}', falling back to base model '{base_model_name}'...")
+        tokenizer_name = base_model_name
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, **tokenizer_kwargs)
 
-        print(f"Tokenizer failed for '{model_name}', falling back to base model '{base_model_name}'...")
-        llm = LLM(model=model_name, tokenizer=base_model_name, **kwargs)
+    kwargs = build_vllm_kwargs(max_model_len, tensor_parallel_size, gpu_memory_utilization)
+    if attention_backend:
+        kwargs['attention_backend'] = attention_backend
+    if hf_token:
+        kwargs['hf_token'] = hf_token
+
+    print(f"Loading model '{model_name}' with vLLM...")
+    llm = LLM(model=str(model_name), tokenizer=str(tokenizer_name), **kwargs)
 
     print("Model loaded.")
-    return llm
+    return llm, tokenizer
 
 
 def load_transformers_model(
@@ -147,8 +175,11 @@ def load_transformers_model(
 
     try:
         model = AutoModelForCausalLM.from_pretrained(model_name, device_map='auto', **load_kwargs)
-    except ImportError:
+    except (ImportError, ValueError) as error:
+        if "accelerate" not in str(error).lower():
+            raise
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"accelerate is not available; loading model on {device} without device_map='auto'.")
         model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs).to(device)
 
     if tokenizer.pad_token_id is None:
@@ -170,27 +201,31 @@ def apply_chat_template(tokenizer, messages, thinking_budget=1024):
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
-def run_vllm_inference_batch(llm, messages_batch, temperature=0.6, thinking_budget=1024):
+def run_vllm_inference_batch(
+    llm_and_tokenizer,
+    messages_batch,
+    temperature=0.6,
+    top_p=0.95,
+    max_new_tokens=4096,
+    thinking_budget=1024,
+):
     from vllm import SamplingParams
 
-    tokenizer = llm.get_tokenizer()
+    llm, tokenizer = llm_and_tokenizer
 
     texts = [
         apply_chat_template(tokenizer, msg, thinking_budget)
         for msg in messages_batch
     ]
 
-    sampling_params = SamplingParams(temperature=temperature, max_tokens=4096)
+    sampling_params = SamplingParams(
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_new_tokens,
+    )
+    print("Starting one vLLM offline generate call...")
     outputs = llm.generate(texts, sampling_params)
-    # huggingface inference 쓰지 말고 vllm 에서 llm.generate() 함수 활용해서 구현해
-    # temperature 0.6 이랑 1.0 둘다 써보고 성능 어떻게 나오는지 보기
-    # error analysis : 1) schema 안 맞춤, 2) type 안 맞춤
-        # > 데이터셋 문제인가요?
-        # 1) 모델 크기 크기가 너무 작나? > 8B 평가중임
-        # - 데이터셋 제작은 잠깐 보류
-        # 2) 8B 결과 알려주세요
-        # 3) SFT 보다 Preference Optimization 이 나을 수도
-        # X (Y_w > Y_l)
+    print("Generation done.")
 
     results = []
     for output in outputs:
@@ -262,6 +297,9 @@ def save_results(args, to_save, run_idx, num_runs):
 def main():
     args = get_args()
 
+    if args.gpu_ids:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
+
     benchmark_file = 'DeepJSONEval.xlsx'
     benchmark_info = utils.load_excel_data(benchmark_file, 'sheet1')
     to_save = benchmark_info.to_dict(orient='list')
@@ -271,10 +309,14 @@ def main():
         if args.backend == 'vllm':
             local_model = load_vllm_model(
                 args.model_name,
+                args.tokenizer,
                 args.hf_token,
                 args.base_model,
                 args.max_model_len,
                 args.cc,
+                args.tensor_parallel_size,
+                args.gpu_memory_utilization,
+                args.attention_backend,
             )
         else:
             local_model = load_transformers_model(args.model_name, args.hf_token, args.base_model)
@@ -291,7 +333,14 @@ def main():
         if args.use_local:
             try:
                 if args.backend == 'vllm':
-                    results = run_vllm_inference_batch(local_model, all_messages, args.temperature, args.thinking_budget)
+                    results = run_vllm_inference_batch(
+                        local_model,
+                        all_messages,
+                        args.temperature,
+                        args.top_p,
+                        args.max_new_tokens,
+                        args.thinking_budget,
+                    )
                 else:
                     results = run_transformers_inference_batch(local_model, all_messages, args.temperature, args.thinking_budget)
             except Exception as error:
