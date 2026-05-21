@@ -31,12 +31,12 @@ def get_args():
     parser.add_argument('--gpu-ids', default=None, type=str, help='comma-separated GPU ids to expose, e.g. 0 or 0,1; sets CUDA_VISIBLE_DEVICES before loading vLLM')
     parser.add_argument('--tensor-parallel-size', default=1, type=int, help='number of GPUs used by vLLM tensor parallelism')
     parser.add_argument('--gpu-memory-utilization', default=0.9, type=float, help='fraction of visible GPU memory vLLM may reserve')
-    parser.add_argument('--attention-backend', default=None, type=str, help='optional vLLM attention backend, e.g. FLASH_ATTN, XFORMERS, FLASHINFER')
+    parser.add_argument('--attention-backend', default='XFORMERS', type=str, help='vLLM attention backend, e.g. XFORMERS, FLASH_ATTN, FLASHINFER')
     parser.add_argument('--cc', default=None, type=str, help='C compiler path for Triton/vLLM; only sets CC for this process')
     return parser.parse_args()
 
 
-def configure_vllm_environment(hf_token=None, attention_backend=None):
+def configure_vllm_environment(hf_token=None, attention_backend='XFORMERS'):
     # Must be set before importing vllm.
     if attention_backend:
         os.environ["VLLM_ATTENTION_BACKEND"] = attention_backend
@@ -111,7 +111,7 @@ def load_vllm_model(
     cc_path=None,
     tensor_parallel_size=1,
     gpu_memory_utilization=0.9,
-    attention_backend=None,
+    attention_backend='XFORMERS',
 ):
     configure_vllm_environment(hf_token, attention_backend)
     ensure_c_compiler_available(cc_path)
